@@ -31,7 +31,7 @@ app.use(passport.initialize());
 app.use(
   cors({
     credentials: true,
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    origin: process.env.FRONTEND_URL || "https://pakistani-panorama.vercel.app",
   })
 );
 
