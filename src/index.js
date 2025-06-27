@@ -18,21 +18,23 @@ mongoose
     process.exit(1);
   });
 
-// Handle graceful shutdown
+app.get("/", (req, res) => {
+  res.send("Welcome to the backend !");
+}); // Handle graceful shutdown
 const gracefulShutdown = async () => {
   try {
     await mongoose.connection.close();
-    console.log('MongoDB connection closed');
-    
+    console.log("MongoDB connection closed");
+
     await closeRedisConnection();
-    
+
     process.exit(0);
   } catch (err) {
-    console.error('Error during graceful shutdown:', err);
+    console.error("Error during graceful shutdown:", err);
     process.exit(1);
   }
 };
 
 // Listen for termination signals
-process.on('SIGINT', gracefulShutdown);
-process.on('SIGTERM', gracefulShutdown);
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
