@@ -13,11 +13,11 @@ router.get(
 // Google OAuth callback route
 router.get(
   "/google/callback",
-  passport.authenticate("google", { 
+  passport.authenticate("google", {
     session: false,
-    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth/google/error`
+    failureRedirect: `${process.env.FRONTEND_URL || "https://pakistani-panorama.vercel.app"}/auth/google/error`,
   }),
   googleCallback
 );
 
-export default router; 
+export default router;
