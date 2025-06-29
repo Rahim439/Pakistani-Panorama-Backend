@@ -1,5 +1,6 @@
 import { app } from "./app.js";
 import mongoose from "mongoose";
+import Queue from "bull";
 import { closeRedisConnection } from "./config/redis.config.js";
 
 const PORT = process.env.PORT || 5000;
