@@ -9,6 +9,22 @@ const options = {
 };
 const renderQueue = new Queue("render", options);
 
+app.get("/healthz", async (req, res) => {
+  try {
+    const redisStatus = await renderQueue.checkHealth();
+    if (redisStatus) {
+      return res.sendStatus(200);
+    } else {
+      return res.status(500).json({ message: "Redis connection failed" });
+    }
+  } catch (err) {
+    console.error("Health check failed:", err);
+    return res
+      .status(500)
+      .json({ message: "Redis health check failed", error: err.message });
+  }
+});
+
 // Connect to MongoDB
 mongoose
   .connect(process.env.MONGODB_URI)
@@ -39,22 +55,6 @@ const gracefulShutdown = async () => {
     process.exit(1);
   }
 };
-
-app.get("/healthz", async (req, res) => {
-  try {
-    const redisStatus = await renderQueue.checkHealth();
-    if (redisStatus) {
-      return res.sendStatus(200);
-    } else {
-      return res.status(500).json({ message: "Redis connection failed" });
-    }
-  } catch (err) {
-    console.error("Health check failed:", err);
-    return res
-      .status(500)
-      .json({ message: "Redis health check failed", error: err.message });
-  }
-});
 
 // Listen for termination signals
 process.on("SIGINT", gracefulShutdown);
