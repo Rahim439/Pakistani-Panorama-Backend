@@ -300,6 +300,8 @@ export const getHotels = async (req, res) => {
     const textQuery = "hotels in Pakistan";
 
     try {
+      // Fetch first page of results
+      console.log(`[API] Fetching first page of hotels`);
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -311,7 +313,7 @@ export const getHotels = async (req, res) => {
         body: JSON.stringify({
           textQuery,
           languageCode: "en",
-          maxResultCount: 20,
+          maxResultCount: 20, // Max allowed by Google API
         }),
       });
 
@@ -328,16 +330,77 @@ export const getHotels = async (req, res) => {
         );
       }
 
-      const hotels = data.places || [];
+      // Store all results in this array
+      let allHotels = data.places || [];
       console.log(
-        `[API SUCCESS] Found ${hotels.length} hotels from Google Places API`
+        `[API SUCCESS] First page returned ${allHotels.length} hotels`
       );
 
-      if (hotels.length > 0) {
+      // Check if there's a nextPageToken and fetch more pages (up to 10 pages, ~200 hotels total)
+      let pageCounter = 1;
+      let nextPageToken = data.nextPageToken;
+
+      while (nextPageToken && pageCounter < 10) {
+        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for hotels with token`);
+        
+        // Google requires a delay before using nextPageToken
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        
+        try {
+          const nextPageResponse = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Goog-Api-Key": apiKey,
+              "X-Goog-FieldMask":
+                "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
+            },
+            body: JSON.stringify({
+              textQuery,
+              languageCode: "en",
+              maxResultCount: 20,
+              pageToken: nextPageToken
+            }),
+          });
+          
+          const nextPageData = await nextPageResponse.json();
+          
+          if (!nextPageResponse.ok) {
+            console.error(`[API ERROR] Failed to fetch page ${pageCounter + 1}: ${JSON.stringify(nextPageData.error || {})}`);
+            break;
+          }
+          
+          const nextPageHotels = nextPageData.places || [];
+          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageHotels.length} hotels`);
+          
+          if (nextPageHotels.length === 0) {
+            break;
+          }
+          
+          // Add this page's hotels to our collection
+          allHotels = [...allHotels, ...nextPageHotels];
+          
+          // Update for next iteration
+          nextPageToken = nextPageData.nextPageToken;
+          pageCounter++;
+          
+          if (!nextPageToken) {
+            console.log(`[PAGINATION] No more pages available after page ${pageCounter}`);
+            break;
+          }
+        } catch (paginationError) {
+          console.error(`[PAGINATION ERROR] Error fetching page ${pageCounter + 1}: ${paginationError.message}`);
+          break;
+        }
+      }
+
+      console.log(`[API SUCCESS] Total hotels fetched: ${allHotels.length}`);
+
+      if (allHotels.length > 0) {
         try {
           const client = await getRedisClient();
 
-          const essentialData = hotels.map((hotel) => ({
+          const essentialData = allHotels.map((hotel) => ({
             id: hotel.id,
             displayName: hotel.displayName,
             formattedAddress: hotel.formattedAddress,
@@ -617,6 +680,8 @@ export const getRestaurants = async (req, res) => {
     const textQuery = "restaurants in Pakistan";
 
     try {
+      // Fetch first page of results
+      console.log(`[API] Fetching first page of restaurants`);
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -645,16 +710,77 @@ export const getRestaurants = async (req, res) => {
         );
       }
 
-      const restaurants = data.places || [];
+      // Store all results in this array
+      let allRestaurants = data.places || [];
       console.log(
-        `[API SUCCESS] Found ${restaurants.length} restaurants from Google Places API`
+        `[API SUCCESS] First page returned ${allRestaurants.length} restaurants`
       );
 
-      if (restaurants.length > 0) {
+      // Check if there's a nextPageToken and fetch more pages (up to 10 pages, ~200 restaurants total)
+      let pageCounter = 1;
+      let nextPageToken = data.nextPageToken;
+
+      while (nextPageToken && pageCounter < 10) {
+        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for restaurants with token`);
+        
+        // Google requires a delay before using nextPageToken
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        
+        try {
+          const nextPageResponse = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Goog-Api-Key": apiKey,
+              "X-Goog-FieldMask":
+                "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
+            },
+            body: JSON.stringify({
+              textQuery,
+              languageCode: "en",
+              maxResultCount: 20,
+              pageToken: nextPageToken
+            }),
+          });
+          
+          const nextPageData = await nextPageResponse.json();
+          
+          if (!nextPageResponse.ok) {
+            console.error(`[API ERROR] Failed to fetch page ${pageCounter + 1}: ${JSON.stringify(nextPageData.error || {})}`);
+            break;
+          }
+          
+          const nextPageRestaurants = nextPageData.places || [];
+          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageRestaurants.length} restaurants`);
+          
+          if (nextPageRestaurants.length === 0) {
+            break;
+          }
+          
+          // Add this page's restaurants to our collection
+          allRestaurants = [...allRestaurants, ...nextPageRestaurants];
+          
+          // Update for next iteration
+          nextPageToken = nextPageData.nextPageToken;
+          pageCounter++;
+          
+          if (!nextPageToken) {
+            console.log(`[PAGINATION] No more pages available after page ${pageCounter}`);
+            break;
+          }
+        } catch (paginationError) {
+          console.error(`[PAGINATION ERROR] Error fetching page ${pageCounter + 1}: ${paginationError.message}`);
+          break;
+        }
+      }
+
+      console.log(`[API SUCCESS] Total restaurants fetched: ${allRestaurants.length}`);
+
+      if (allRestaurants.length > 0) {
         try {
           const client = await getRedisClient();
 
-          const essentialData = restaurants.map((restaurant) => ({
+          const essentialData = allRestaurants.map((restaurant) => ({
             id: restaurant.id,
             displayName: restaurant.displayName,
             formattedAddress: restaurant.formattedAddress,
@@ -939,6 +1065,8 @@ export const getAmusementParks = async (req, res) => {
     const textQuery = "amusement parks in Pakistan";
 
     try {
+      // Fetch first page of results
+      console.log(`[API] Fetching first page of amusement parks`);
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -967,16 +1095,77 @@ export const getAmusementParks = async (req, res) => {
         );
       }
 
-      const parks = data.places || [];
+      // Store all results in this array
+      let allAmusementParks = data.places || [];
       console.log(
-        `[API SUCCESS] Found ${parks.length} amusement parks from Google Places API`
+        `[API SUCCESS] First page returned ${allAmusementParks.length} amusement parks`
       );
 
-      if (parks.length > 0) {
+      // Check if there's a nextPageToken and fetch more pages (up to 10 pages)
+      let pageCounter = 1;
+      let nextPageToken = data.nextPageToken;
+
+      while (nextPageToken && pageCounter < 10) {
+        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for amusement parks with token`);
+        
+        // Google requires a delay before using nextPageToken
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        
+        try {
+          const nextPageResponse = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Goog-Api-Key": apiKey,
+              "X-Goog-FieldMask":
+                "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
+            },
+            body: JSON.stringify({
+              textQuery,
+              languageCode: "en",
+              maxResultCount: 20,
+              pageToken: nextPageToken
+            }),
+          });
+          
+          const nextPageData = await nextPageResponse.json();
+          
+          if (!nextPageResponse.ok) {
+            console.error(`[API ERROR] Failed to fetch page ${pageCounter + 1}: ${JSON.stringify(nextPageData.error || {})}`);
+            break;
+          }
+          
+          const nextPageParks = nextPageData.places || [];
+          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageParks.length} amusement parks`);
+          
+          if (nextPageParks.length === 0) {
+            break;
+          }
+          
+          // Add this page's parks to our collection
+          allAmusementParks = [...allAmusementParks, ...nextPageParks];
+          
+          // Update for next iteration
+          nextPageToken = nextPageData.nextPageToken;
+          pageCounter++;
+          
+          if (!nextPageToken) {
+            console.log(`[PAGINATION] No more pages available after page ${pageCounter}`);
+            break;
+          }
+        } catch (paginationError) {
+          console.error(`[PAGINATION ERROR] Error fetching page ${pageCounter + 1}: ${paginationError.message}`);
+          break;
+        }
+      }
+
+      console.log(`[API SUCCESS] Total amusement parks fetched: ${allAmusementParks.length}`);
+
+      if (allAmusementParks.length > 0) {
         try {
           const client = await getRedisClient();
 
-          const essentialData = parks.map((park) => ({
+          const essentialData = allAmusementParks.map((park) => ({
             id: park.id,
             displayName: park.displayName,
             formattedAddress: park.formattedAddress,
