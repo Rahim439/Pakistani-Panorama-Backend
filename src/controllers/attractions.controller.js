@@ -3,7 +3,7 @@ import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { getRedisClient } from "../config/redis.config.js";
 
-// HELPER FUNCTIONS FOR CHUNKED REDIS STORAGE
+// HELPER FUNCTIONS FOR CHUNKED REDIS STORAGE - REMOVED ALL EXPIRY TIMES
 const storeDataInChunks = async (client, baseKey, data, chunkSize = 50) => {
   const pipeline = client.multi();
 
@@ -15,13 +15,15 @@ const storeDataInChunks = async (client, baseKey, data, chunkSize = 50) => {
     chunkSize: chunkSize,
   };
 
-  pipeline.set(`${baseKey}:meta`, JSON.stringify(metadata), { EX: 86400 });
+  // Removed EX: 86400 expiration
+  pipeline.set(`${baseKey}:meta`, JSON.stringify(metadata));
 
   // Store chunks
   for (let i = 0; i < data.length; i += chunkSize) {
     const chunk = data.slice(i, i + chunkSize);
     const chunkKey = `${baseKey}:chunk:${Math.floor(i / chunkSize)}`;
-    pipeline.set(chunkKey, JSON.stringify(chunk), { EX: 86400 });
+    // Removed EX: 86400 expiration
+    pipeline.set(chunkKey, JSON.stringify(chunk));
   }
 
   await pipeline.exec();
@@ -132,6 +134,7 @@ export const getHotels = async (req, res) => {
     const startTime = Date.now();
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
+    const targetUniqueCount = 200; // Target to fetch 200 unique hotels
 
     console.log(
       `[REQUEST] getHotels - Getting hotels in Pakistan (page ${page}, limit ${limit})`
@@ -191,11 +194,9 @@ export const getHotels = async (req, res) => {
           pagination: chunkedData.pagination,
         };
 
-        // Cache this paginated result for faster access next time
+        // Cache this paginated result for faster access next time - removed expiry
         try {
-          await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-            EX: 3600,
-          });
+          await client.set(paginatedCacheKey, JSON.stringify(responseData));
           console.log(
             `[CACHE STORE] Stored paginated hotels data with key: ${paginatedCacheKey}`
           );
@@ -260,10 +261,8 @@ export const getHotels = async (req, res) => {
           pagination: paginationInfo,
         };
 
-        // Store paginated result in cache
-        await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-          EX: 3600,
-        });
+        // Store paginated result in cache - removed expiry
+        await client.set(paginatedCacheKey, JSON.stringify(responseData));
 
         const responseTime = Date.now() - startTime;
         console.log(
@@ -300,6 +299,9 @@ export const getHotels = async (req, res) => {
     const textQuery = "hotels in Pakistan";
 
     try {
+      // Create a Map to track unique places by ID
+      const uniquePlacesMap = new Map();
+      
       // Fetch first page of results
       console.log(`[API] Fetching first page of hotels`);
       const response = await fetch(url, {
@@ -330,18 +332,24 @@ export const getHotels = async (req, res) => {
         );
       }
 
-      // Store all results in this array
-      let allHotels = data.places || [];
+      // Add first page results to the map to track unique hotels
+      const firstPageHotels = data.places || [];
+      firstPageHotels.forEach(hotel => {
+        if (!uniquePlacesMap.has(hotel.id)) {
+          uniquePlacesMap.set(hotel.id, hotel);
+        }
+      });
+      
       console.log(
-        `[API SUCCESS] First page returned ${allHotels.length} hotels`
+        `[API SUCCESS] First page returned ${firstPageHotels.length} hotels, ${uniquePlacesMap.size} unique`
       );
 
-      // Check if there's a nextPageToken and fetch more pages (up to 10 pages, ~200 hotels total)
+      // Check if there's a nextPageToken and fetch more pages until we reach our target
       let pageCounter = 1;
       let nextPageToken = data.nextPageToken;
 
-      while (nextPageToken && pageCounter < 10) {
-        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for hotels with token`);
+      while (nextPageToken && pageCounter < 20 && uniquePlacesMap.size < targetUniqueCount) {
+        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for hotels (currently have ${uniquePlacesMap.size}/${targetUniqueCount} unique hotels)`);
         
         // Google requires a delay before using nextPageToken
         await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -371,14 +379,22 @@ export const getHotels = async (req, res) => {
           }
           
           const nextPageHotels = nextPageData.places || [];
-          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageHotels.length} hotels`);
+          let newUniqueCount = 0;
           
-          if (nextPageHotels.length === 0) {
+          // Add only non-duplicate hotels to our collection
+          nextPageHotels.forEach(hotel => {
+            if (!uniquePlacesMap.has(hotel.id)) {
+              uniquePlacesMap.set(hotel.id, hotel);
+              newUniqueCount++;
+            }
+          });
+          
+          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageHotels.length} hotels, ${newUniqueCount} new unique`);
+          
+          if (nextPageHotels.length === 0 || newUniqueCount === 0) {
+            console.log(`[PAGINATION] No new unique hotels found, stopping pagination`);
             break;
           }
-          
-          // Add this page's hotels to our collection
-          allHotels = [...allHotels, ...nextPageHotels];
           
           // Update for next iteration
           nextPageToken = nextPageData.nextPageToken;
@@ -394,7 +410,9 @@ export const getHotels = async (req, res) => {
         }
       }
 
-      console.log(`[API SUCCESS] Total hotels fetched: ${allHotels.length}`);
+      // Convert Map values to array
+      const allHotels = Array.from(uniquePlacesMap.values());
+      console.log(`[API SUCCESS] Total unique hotels fetched: ${allHotels.length}`);
 
       if (allHotels.length > 0) {
         try {
@@ -448,10 +466,8 @@ export const getHotels = async (req, res) => {
             pagination: paginationInfo,
           };
 
-          // Store paginated data
-          await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-            EX: 3600,
-          });
+          // Store paginated data - removed expiry
+          await client.set(paginatedCacheKey, JSON.stringify(responseData));
 
           const responseTime = Date.now() - startTime;
           console.log(
@@ -513,6 +529,7 @@ export const getRestaurants = async (req, res) => {
     const startTime = Date.now();
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
+    const targetUniqueCount = 200; // Target to fetch 200 unique restaurants
 
     console.log(
       `[REQUEST] getRestaurants - Getting restaurants in Pakistan (page ${page}, limit ${limit})`
@@ -572,11 +589,9 @@ export const getRestaurants = async (req, res) => {
           pagination: chunkedData.pagination,
         };
 
-        // Cache this paginated result
+        // Cache this paginated result - removed expiry
         try {
-          await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-            EX: 3600,
-          });
+          await client.set(paginatedCacheKey, JSON.stringify(responseData));
           console.log(
             `[CACHE STORE] Stored paginated restaurants data with key: ${paginatedCacheKey}`
           );
@@ -641,9 +656,8 @@ export const getRestaurants = async (req, res) => {
           pagination: paginationInfo,
         };
 
-        await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-          EX: 3600,
-        });
+        // Removed expiry
+        await client.set(paginatedCacheKey, JSON.stringify(responseData));
 
         const responseTime = Date.now() - startTime;
         console.log(
@@ -680,6 +694,9 @@ export const getRestaurants = async (req, res) => {
     const textQuery = "restaurants in Pakistan";
 
     try {
+      // Create a Map to track unique places by ID
+      const uniquePlacesMap = new Map();
+      
       // Fetch first page of results
       console.log(`[API] Fetching first page of restaurants`);
       const response = await fetch(url, {
@@ -710,18 +727,24 @@ export const getRestaurants = async (req, res) => {
         );
       }
 
-      // Store all results in this array
-      let allRestaurants = data.places || [];
+      // Add first page results to the map
+      const firstPageRestaurants = data.places || [];
+      firstPageRestaurants.forEach(restaurant => {
+        if (!uniquePlacesMap.has(restaurant.id)) {
+          uniquePlacesMap.set(restaurant.id, restaurant);
+        }
+      });
+      
       console.log(
-        `[API SUCCESS] First page returned ${allRestaurants.length} restaurants`
+        `[API SUCCESS] First page returned ${firstPageRestaurants.length} restaurants, ${uniquePlacesMap.size} unique`
       );
 
-      // Check if there's a nextPageToken and fetch more pages (up to 10 pages, ~200 restaurants total)
+      // Check if there's a nextPageToken and fetch more pages until we reach our target
       let pageCounter = 1;
       let nextPageToken = data.nextPageToken;
 
-      while (nextPageToken && pageCounter < 10) {
-        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for restaurants with token`);
+      while (nextPageToken && pageCounter < 20 && uniquePlacesMap.size < targetUniqueCount) {
+        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for restaurants (currently have ${uniquePlacesMap.size}/${targetUniqueCount} unique restaurants)`);
         
         // Google requires a delay before using nextPageToken
         await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -751,14 +774,22 @@ export const getRestaurants = async (req, res) => {
           }
           
           const nextPageRestaurants = nextPageData.places || [];
-          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageRestaurants.length} restaurants`);
+          let newUniqueCount = 0;
           
-          if (nextPageRestaurants.length === 0) {
+          // Add only non-duplicate restaurants to our collection
+          nextPageRestaurants.forEach(restaurant => {
+            if (!uniquePlacesMap.has(restaurant.id)) {
+              uniquePlacesMap.set(restaurant.id, restaurant);
+              newUniqueCount++;
+            }
+          });
+          
+          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageRestaurants.length} restaurants, ${newUniqueCount} new unique`);
+          
+          if (nextPageRestaurants.length === 0 || newUniqueCount === 0) {
+            console.log(`[PAGINATION] No new unique restaurants found, stopping pagination`);
             break;
           }
-          
-          // Add this page's restaurants to our collection
-          allRestaurants = [...allRestaurants, ...nextPageRestaurants];
           
           // Update for next iteration
           nextPageToken = nextPageData.nextPageToken;
@@ -774,7 +805,9 @@ export const getRestaurants = async (req, res) => {
         }
       }
 
-      console.log(`[API SUCCESS] Total restaurants fetched: ${allRestaurants.length}`);
+      // Convert Map values to array
+      const allRestaurants = Array.from(uniquePlacesMap.values());
+      console.log(`[API SUCCESS] Total unique restaurants fetched: ${allRestaurants.length}`);
 
       if (allRestaurants.length > 0) {
         try {
@@ -831,9 +864,8 @@ export const getRestaurants = async (req, res) => {
             pagination: paginationInfo,
           };
 
-          await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-            EX: 3600,
-          });
+          // Removed expiry
+          await client.set(paginatedCacheKey, JSON.stringify(responseData));
 
           const responseTime = Date.now() - startTime;
           console.log(
@@ -895,6 +927,7 @@ export const getAmusementParks = async (req, res) => {
     const startTime = Date.now();
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
+    const targetUniqueCount = 200; // Target to fetch 200 unique amusement parks
 
     console.log(
       `[REQUEST] getAmusementParks - Getting amusement parks in Pakistan (page ${page}, limit ${limit})`
@@ -954,11 +987,9 @@ export const getAmusementParks = async (req, res) => {
           pagination: chunkedData.pagination,
         };
 
-        // Cache this paginated result
+        // Cache this paginated result - removed expiry
         try {
-          await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-            EX: 3600,
-          });
+          await client.set(paginatedCacheKey, JSON.stringify(responseData));
           console.log(
             `[CACHE STORE] Stored paginated amusement parks data with key: ${paginatedCacheKey}`
           );
@@ -1026,9 +1057,8 @@ export const getAmusementParks = async (req, res) => {
           pagination: paginationInfo,
         };
 
-        await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-          EX: 3600,
-        });
+        // Removed expiry
+        await client.set(paginatedCacheKey, JSON.stringify(responseData));
 
         const responseTime = Date.now() - startTime;
         console.log(
@@ -1065,6 +1095,9 @@ export const getAmusementParks = async (req, res) => {
     const textQuery = "amusement parks in Pakistan";
 
     try {
+      // Create a Map to track unique places by ID
+      const uniquePlacesMap = new Map();
+      
       // Fetch first page of results
       console.log(`[API] Fetching first page of amusement parks`);
       const response = await fetch(url, {
@@ -1095,18 +1128,24 @@ export const getAmusementParks = async (req, res) => {
         );
       }
 
-      // Store all results in this array
-      let allAmusementParks = data.places || [];
+      // Add first page results to the map
+      const firstPageParks = data.places || [];
+      firstPageParks.forEach(park => {
+        if (!uniquePlacesMap.has(park.id)) {
+          uniquePlacesMap.set(park.id, park);
+        }
+      });
+      
       console.log(
-        `[API SUCCESS] First page returned ${allAmusementParks.length} amusement parks`
+        `[API SUCCESS] First page returned ${firstPageParks.length} amusement parks, ${uniquePlacesMap.size} unique`
       );
 
-      // Check if there's a nextPageToken and fetch more pages (up to 10 pages)
+      // Check if there's a nextPageToken and fetch more pages until we reach our target
       let pageCounter = 1;
       let nextPageToken = data.nextPageToken;
 
-      while (nextPageToken && pageCounter < 10) {
-        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for amusement parks with token`);
+      while (nextPageToken && pageCounter < 20 && uniquePlacesMap.size < targetUniqueCount) {
+        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for amusement parks (currently have ${uniquePlacesMap.size}/${targetUniqueCount} unique parks)`);
         
         // Google requires a delay before using nextPageToken
         await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -1136,14 +1175,22 @@ export const getAmusementParks = async (req, res) => {
           }
           
           const nextPageParks = nextPageData.places || [];
-          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageParks.length} amusement parks`);
+          let newUniqueCount = 0;
           
-          if (nextPageParks.length === 0) {
+          // Add only non-duplicate parks to our collection
+          nextPageParks.forEach(park => {
+            if (!uniquePlacesMap.has(park.id)) {
+              uniquePlacesMap.set(park.id, park);
+              newUniqueCount++;
+            }
+          });
+          
+          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageParks.length} amusement parks, ${newUniqueCount} new unique`);
+          
+          if (nextPageParks.length === 0 || newUniqueCount === 0) {
+            console.log(`[PAGINATION] No new unique amusement parks found, stopping pagination`);
             break;
           }
-          
-          // Add this page's parks to our collection
-          allAmusementParks = [...allAmusementParks, ...nextPageParks];
           
           // Update for next iteration
           nextPageToken = nextPageData.nextPageToken;
@@ -1159,7 +1206,9 @@ export const getAmusementParks = async (req, res) => {
         }
       }
 
-      console.log(`[API SUCCESS] Total amusement parks fetched: ${allAmusementParks.length}`);
+      // Convert Map values to array
+      const allAmusementParks = Array.from(uniquePlacesMap.values());
+      console.log(`[API SUCCESS] Total unique amusement parks fetched: ${allAmusementParks.length}`);
 
       if (allAmusementParks.length > 0) {
         try {
@@ -1216,9 +1265,8 @@ export const getAmusementParks = async (req, res) => {
             pagination: paginationInfo,
           };
 
-          await client.set(paginatedCacheKey, JSON.stringify(responseData), {
-            EX: 3600,
-          });
+          // Removed expiry
+          await client.set(paginatedCacheKey, JSON.stringify(responseData));
 
           const responseTime = Date.now() - startTime;
           console.log(
