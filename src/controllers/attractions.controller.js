@@ -289,14 +289,17 @@ export const getHotels = async (req, res) => {
     const startTime = Date.now();
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
-    const targetUniqueCount = 200; // Target to fetch 200 unique hotels
+    const city = req.query.city || "all"; // Add city parameter
+    const targetUniqueCount = 200;
 
     console.log(
-      `[REQUEST] getHotels - Getting hotels in Pakistan (page ${page}, limit ${limit})`
+      `[REQUEST] getHotels - Getting hotels in Pakistan (page ${page}, limit ${limit}, city: ${city})`
     );
 
     const baseCacheKey = `attractions:hotels:pakistan`;
-    const paginatedCacheKey = `${baseCacheKey}:page${page}:limit${limit}`;
+    const cityFilteredCacheKey =
+      city !== "all" ? `${baseCacheKey}:city:${city}` : baseCacheKey;
+    const paginatedCacheKey = `${cityFilteredCacheKey}:page${page}:limit${limit}`;
 
     try {
       console.time("redis-connect");
@@ -332,24 +335,52 @@ export const getHotels = async (req, res) => {
           );
       }
 
-      // 2. Try chunked storage (fast)
+      // 2. Try chunked storage and apply city filter
       console.log(`[CACHE] Trying chunked storage for ${baseCacheKey}...`);
       const chunkedData = await getDataFromChunks(
         client,
         baseCacheKey,
-        page,
-        limit
+        1, // Get all data first
+        1000 // Large limit to get all items
       );
 
-      if (chunkedData) {
+      if (chunkedData && chunkedData.items.length > 0) {
         console.log(`[CACHE HIT] Found chunked data in Redis`);
 
-        const responseData = {
-          hotels: chunkedData.items,
-          pagination: chunkedData.pagination,
+        // Apply city filter
+        const cityFilteredHotels = filterAttractionsByCity(
+          chunkedData.items,
+          city
+        );
+        console.log(
+          `[CITY FILTER] Filtered from ${chunkedData.items.length} to ${cityFilteredHotels.length} hotels for city: ${city}`
+        );
+
+        // Apply pagination to filtered results
+        const startIndex = (page - 1) * limit;
+        const endIndex = startIndex + limit;
+        const paginatedHotels = cityFilteredHotels.slice(startIndex, endIndex);
+
+        const paginationInfo = {
+          totalItems: cityFilteredHotels.length,
+          itemsPerPage: limit,
+          currentPage: page,
+          totalPages: Math.ceil(cityFilteredHotels.length / limit),
+          hasNextPage: page < Math.ceil(cityFilteredHotels.length / limit),
+          hasPrevPage: page > 1,
         };
 
-        // Cache this paginated result for faster access next time - removed expiry
+        // Extract available cities for the frontend
+        const availableCities = extractCitiesFromAttractions(chunkedData.items);
+
+        const responseData = {
+          hotels: paginatedHotels,
+          pagination: paginationInfo,
+          availableCities: availableCities,
+          selectedCity: city,
+        };
+
+        // Cache this paginated result for faster access next time
         try {
           await client.set(paginatedCacheKey, JSON.stringify(responseData));
           console.log(
@@ -363,7 +394,7 @@ export const getHotels = async (req, res) => {
 
         const responseTime = Date.now() - startTime;
         console.log(
-          `[PERFORMANCE] Request completed in ${responseTime}ms (Source: Redis Chunked Cache)`
+          `[PERFORMANCE] Request completed in ${responseTime}ms (Source: Redis Chunked Cache with City Filter)`
         );
 
         return res
@@ -372,7 +403,7 @@ export const getHotels = async (req, res) => {
             new ApiResponse(
               200,
               responseData,
-              "Hotels fetched from chunked cache"
+              "Hotels fetched from chunked cache with city filter"
             )
           );
       }
@@ -522,31 +553,48 @@ export const getHotels = async (req, res) => {
             `[CACHE STORE] Stored hotels data using chunked approach`
           );
 
+          // Apply city filter to fresh data
+          const cityFilteredHotels = filterAttractionsByCity(
+            essentialData,
+            city
+          );
+          console.log(
+            `[CITY FILTER] Filtered from ${essentialData.length} to ${cityFilteredHotels.length} hotels for city: ${city}`
+          );
+
           // Calculate pagination for response
           const startIndex = (page - 1) * limit;
           const endIndex = startIndex + limit;
-          const paginatedHotels = essentialData.slice(startIndex, endIndex);
+          const paginatedHotels = cityFilteredHotels.slice(
+            startIndex,
+            endIndex
+          );
+
+          // Extract available cities
+          const availableCities = extractCitiesFromAttractions(essentialData);
 
           const paginationInfo = {
-            totalItems: essentialData.length,
+            totalItems: cityFilteredHotels.length,
             itemsPerPage: limit,
             currentPage: page,
-            totalPages: Math.ceil(essentialData.length / limit),
-            hasNextPage: page < Math.ceil(essentialData.length / limit),
+            totalPages: Math.ceil(cityFilteredHotels.length / limit),
+            hasNextPage: page < Math.ceil(cityFilteredHotels.length / limit),
             hasPrevPage: page > 1,
           };
 
           const responseData = {
             hotels: paginatedHotels,
             pagination: paginationInfo,
+            availableCities: availableCities,
+            selectedCity: city,
           };
 
-          // Store paginated data - removed expiry
+          // Store paginated data
           await client.set(paginatedCacheKey, JSON.stringify(responseData));
 
           const responseTime = Date.now() - startTime;
           console.log(
-            `[PERFORMANCE] Request completed in ${responseTime}ms (Source: Google API with chunked storage)`
+            `[PERFORMANCE] Request completed in ${responseTime}ms (Source: Google API with city filter)`
           );
 
           return res
@@ -555,7 +603,7 @@ export const getHotels = async (req, res) => {
               new ApiResponse(
                 200,
                 responseData,
-                "Hotels fetched from Google API"
+                "Hotels fetched from Google API with city filter"
               )
             );
         } catch (cacheError) {
@@ -571,6 +619,8 @@ export const getHotels = async (req, res) => {
           {
             hotels: [],
             pagination: { totalItems: 0, currentPage: page, totalPages: 0 },
+            availableCities: [],
+            selectedCity: city,
           },
           "No hotels found"
         )
@@ -1340,4 +1390,49 @@ export const getRedisInfo = async (req, res) => {
       .status(500)
       .json(new ApiError(500, "Failed to get Redis info", [error.message]));
   }
+};
+
+// Add this helper function after the existing helper functions
+const filterAttractionsByCity = (attractions, city) => {
+  if (!city || city === "all") {
+    return attractions;
+  }
+
+  return attractions.filter((attraction) => {
+    const address = attraction.formattedAddress || "";
+    const cityName = city.toLowerCase();
+
+    // Check if the city name appears in the formatted address
+    return address.toLowerCase().includes(cityName);
+  });
+};
+
+// Add this function to extract cities from attractions
+const extractCitiesFromAttractions = (attractions) => {
+  const cities = new Set();
+
+  attractions.forEach((attraction) => {
+    if (attraction.formattedAddress) {
+      // Extract city from formatted address
+      // Pakistani addresses typically have format: "Street, Area, City, Province, Pakistan"
+      const parts = attraction.formattedAddress.split(",");
+      if (parts.length >= 3) {
+        // Usually the city is the 3rd or 2nd last part before "Pakistan"
+        let cityPart = parts[parts.length - 3] || parts[parts.length - 2];
+        if (cityPart) {
+          cityPart = cityPart.trim();
+          // Filter out common non-city parts
+          if (
+            !cityPart.toLowerCase().includes("pakistan") &&
+            !cityPart.toLowerCase().includes("province") &&
+            cityPart.length > 2
+          ) {
+            cities.add(cityPart);
+          }
+        }
+      }
+    }
+  });
+
+  return Array.from(cities).sort();
 };
