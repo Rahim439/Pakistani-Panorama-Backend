@@ -124,6 +124,161 @@ const convertToChunkedStorage = async (client, baseKey, fullDataset) => {
   }
 };
 
+// HELPER FUNCTION TO FETCH DATA FROM MULTIPLE QUERIES
+const fetchMultipleQueries = async (
+  queries,
+  apiKey,
+  url,
+  fieldMask,
+  targetCount,
+  category
+) => {
+  const uniquePlacesMap = new Map();
+  let totalApiCalls = 0;
+
+  for (
+    let queryIndex = 0;
+    queryIndex < queries.length && uniquePlacesMap.size < targetCount;
+    queryIndex++
+  ) {
+    const textQuery = queries[queryIndex];
+    console.log(
+      `[MULTI-QUERY] ${category} - Processing query ${queryIndex + 1}/${queries.length}: "${textQuery}"`
+    );
+
+    try {
+      // Fetch first page for this query
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": fieldMask,
+        },
+        body: JSON.stringify({
+          textQuery,
+          languageCode: "en",
+          maxResultCount: 20,
+        }),
+      });
+
+      totalApiCalls++;
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error(
+          `[API ERROR] Query "${textQuery}" failed: ${JSON.stringify(data.error || {})}`
+        );
+        continue; // Skip to next query
+      }
+
+      // Add first page results to the map
+      const firstPagePlaces = data.places || [];
+      let newUniqueCount = 0;
+
+      firstPagePlaces.forEach((place) => {
+        if (!uniquePlacesMap.has(place.id)) {
+          uniquePlacesMap.set(place.id, place);
+          newUniqueCount++;
+        }
+      });
+
+      console.log(
+        `[MULTI-QUERY] Query "${textQuery}" - First page: ${firstPagePlaces.length} places, ${newUniqueCount} new unique. Total unique: ${uniquePlacesMap.size}`
+      );
+
+      // Check for pagination and fetch more pages if needed
+      let pageCounter = 1;
+      let nextPageToken = data.nextPageToken;
+
+      while (
+        nextPageToken &&
+        pageCounter < 5 &&
+        uniquePlacesMap.size < targetCount
+      ) {
+        console.log(
+          `[PAGINATION] Query "${textQuery}" - Fetching page ${pageCounter + 1}`
+        );
+
+        // Google requires a delay before using nextPageToken
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+
+        try {
+          const nextPageResponse = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Goog-Api-Key": apiKey,
+              "X-Goog-FieldMask": fieldMask,
+            },
+            body: JSON.stringify({
+              textQuery,
+              languageCode: "en",
+              maxResultCount: 20,
+              pageToken: nextPageToken,
+            }),
+          });
+
+          totalApiCalls++;
+          const nextPageData = await nextPageResponse.json();
+
+          if (!nextPageResponse.ok) {
+            console.error(
+              `[PAGINATION ERROR] Query "${textQuery}" page ${pageCounter + 1} failed`
+            );
+            break;
+          }
+
+          const nextPagePlaces = nextPageData.places || [];
+          let pageNewUniqueCount = 0;
+
+          nextPagePlaces.forEach((place) => {
+            if (!uniquePlacesMap.has(place.id)) {
+              uniquePlacesMap.set(place.id, place);
+              pageNewUniqueCount++;
+            }
+          });
+
+          console.log(
+            `[PAGINATION] Query "${textQuery}" page ${pageCounter + 1}: ${nextPagePlaces.length} places, ${pageNewUniqueCount} new unique. Total unique: ${uniquePlacesMap.size}`
+          );
+
+          if (nextPagePlaces.length === 0 || pageNewUniqueCount === 0) {
+            break;
+          }
+
+          nextPageToken = nextPageData.nextPageToken;
+          pageCounter++;
+
+          if (!nextPageToken) {
+            break;
+          }
+        } catch (paginationError) {
+          console.error(
+            `[PAGINATION ERROR] Query "${textQuery}" page ${pageCounter + 1}: ${paginationError.message}`
+          );
+          break;
+        }
+      }
+
+      // Add delay between queries to respect rate limits
+      if (queryIndex < queries.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    } catch (queryError) {
+      console.error(
+        `[QUERY ERROR] Failed to process query "${textQuery}": ${queryError.message}`
+      );
+      continue;
+    }
+  }
+
+  console.log(
+    `[MULTI-QUERY COMPLETE] ${category} - Total API calls: ${totalApiCalls}, Unique places found: ${uniquePlacesMap.size}`
+  );
+  return Array.from(uniquePlacesMap.values());
+};
+
 /**
  * Get hotels in Pakistan using Google Places API with pagination
  * @param {Object} req - Express request object
@@ -296,123 +451,43 @@ export const getHotels = async (req, res) => {
     }
 
     const url = "https://places.googleapis.com/v1/places:searchText";
-    const textQuery = "hotels in Pakistan";
+
+    // Multiple queries for better hotel coverage across Pakistan
+    const hotelQueries = [
+      "5 star hotels in Karachi Pakistan",
+      "best hotels in Lahore Pakistan",
+      "luxury hotels in Islamabad Pakistan",
+      "hotels in Peshawar Pakistan",
+      "hotels in Quetta Pakistan",
+      "hotels in Multan Pakistan",
+      "hotels in Faisalabad Pakistan",
+      "budget hotels in Pakistan",
+      "business hotels in Pakistan",
+      "resorts in Northern Pakistan",
+      "hotels in Rawalpindi Pakistan",
+      "hotels in Hyderabad Pakistan",
+      "hotels in Gujranwala Pakistan",
+      "hotels in Sialkot Pakistan",
+      "heritage hotels in Pakistan",
+    ];
+
+    const fieldMask =
+      "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken";
 
     try {
-      // Create a Map to track unique places by ID
-      const uniquePlacesMap = new Map();
-      
-      // Fetch first page of results
-      console.log(`[API] Fetching first page of hotels`);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask":
-            "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
-        },
-        body: JSON.stringify({
-          textQuery,
-          languageCode: "en",
-          maxResultCount: 20, // Max allowed by Google API
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        console.error(
-          `[API ERROR] Google Places API returned error: ${JSON.stringify(data.error || {})}`
-        );
-        throw new ApiError(
-          response.status,
-          "Error fetching hotels from Google API",
-          [data.error || "Unknown error"]
-        );
-      }
-
-      // Add first page results to the map to track unique hotels
-      const firstPageHotels = data.places || [];
-      firstPageHotels.forEach(hotel => {
-        if (!uniquePlacesMap.has(hotel.id)) {
-          uniquePlacesMap.set(hotel.id, hotel);
-        }
-      });
-      
-      console.log(
-        `[API SUCCESS] First page returned ${firstPageHotels.length} hotels, ${uniquePlacesMap.size} unique`
+      // Fetch from multiple queries
+      const allHotels = await fetchMultipleQueries(
+        hotelQueries,
+        apiKey,
+        url,
+        fieldMask,
+        targetUniqueCount,
+        "Hotels"
       );
 
-      // Check if there's a nextPageToken and fetch more pages until we reach our target
-      let pageCounter = 1;
-      let nextPageToken = data.nextPageToken;
-
-      while (nextPageToken && pageCounter < 20 && uniquePlacesMap.size < targetUniqueCount) {
-        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for hotels (currently have ${uniquePlacesMap.size}/${targetUniqueCount} unique hotels)`);
-        
-        // Google requires a delay before using nextPageToken
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        
-        try {
-          const nextPageResponse = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Goog-Api-Key": apiKey,
-              "X-Goog-FieldMask":
-                "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
-            },
-            body: JSON.stringify({
-              textQuery,
-              languageCode: "en",
-              maxResultCount: 20,
-              pageToken: nextPageToken
-            }),
-          });
-          
-          const nextPageData = await nextPageResponse.json();
-          
-          if (!nextPageResponse.ok) {
-            console.error(`[API ERROR] Failed to fetch page ${pageCounter + 1}: ${JSON.stringify(nextPageData.error || {})}`);
-            break;
-          }
-          
-          const nextPageHotels = nextPageData.places || [];
-          let newUniqueCount = 0;
-          
-          // Add only non-duplicate hotels to our collection
-          nextPageHotels.forEach(hotel => {
-            if (!uniquePlacesMap.has(hotel.id)) {
-              uniquePlacesMap.set(hotel.id, hotel);
-              newUniqueCount++;
-            }
-          });
-          
-          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageHotels.length} hotels, ${newUniqueCount} new unique`);
-          
-          if (nextPageHotels.length === 0 || newUniqueCount === 0) {
-            console.log(`[PAGINATION] No new unique hotels found, stopping pagination`);
-            break;
-          }
-          
-          // Update for next iteration
-          nextPageToken = nextPageData.nextPageToken;
-          pageCounter++;
-          
-          if (!nextPageToken) {
-            console.log(`[PAGINATION] No more pages available after page ${pageCounter}`);
-            break;
-          }
-        } catch (paginationError) {
-          console.error(`[PAGINATION ERROR] Error fetching page ${pageCounter + 1}: ${paginationError.message}`);
-          break;
-        }
-      }
-
-      // Convert Map values to array
-      const allHotels = Array.from(uniquePlacesMap.values());
-      console.log(`[API SUCCESS] Total unique hotels fetched: ${allHotels.length}`);
+      console.log(
+        `[API SUCCESS] Total unique hotels fetched: ${allHotels.length}`
+      );
 
       if (allHotels.length > 0) {
         try {
@@ -490,18 +565,16 @@ export const getHotels = async (req, res) => {
         }
       }
 
-      return res
-        .status(200)
-        .json(
-          new ApiResponse(
-            200,
-            {
-              hotels: [],
-              pagination: { totalItems: 0, currentPage: page, totalPages: 0 },
-            },
-            "No hotels found"
-          )
-        );
+      return res.status(200).json(
+        new ApiResponse(
+          200,
+          {
+            hotels: [],
+            pagination: { totalItems: 0, currentPage: page, totalPages: 0 },
+          },
+          "No hotels found"
+        )
+      );
     } catch (fetchError) {
       console.error(
         `[FETCH ERROR] Failed to get data from Google API: ${fetchError.message}`
@@ -680,7 +753,7 @@ export const getRestaurants = async (req, res) => {
       );
     }
 
-    // Google Places API fetch logic (same as hotels but for restaurants)
+    // Google Places API fetch logic
     console.log(
       `[CACHE MISS] No data in Redis. Fetching from Google Places API...`
     );
@@ -691,123 +764,43 @@ export const getRestaurants = async (req, res) => {
     }
 
     const url = "https://places.googleapis.com/v1/places:searchText";
-    const textQuery = "restaurants in Pakistan";
+
+    // Multiple queries for comprehensive restaurant coverage
+    const restaurantQueries = [
+      "best restaurants in Karachi Pakistan",
+      "top rated restaurants in Lahore Pakistan",
+      "fine dining in Islamabad Pakistan",
+      "traditional Pakistani restaurants",
+      "BBQ restaurants in Pakistan",
+      "seafood restaurants in Pakistan",
+      "fast food restaurants in Pakistan",
+      "street food in Pakistan",
+      "affordable restaurants in Pakistan",
+      "international cuisine in Pakistan",
+      "restaurants in Peshawar Pakistan",
+      "restaurants in Quetta Pakistan",
+      "restaurants in Multan Pakistan",
+      "restaurants in Faisalabad Pakistan",
+      "buffet restaurants in Pakistan",
+    ];
+
+    const fieldMask =
+      "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken";
 
     try {
-      // Create a Map to track unique places by ID
-      const uniquePlacesMap = new Map();
-      
-      // Fetch first page of results
-      console.log(`[API] Fetching first page of restaurants`);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask":
-            "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
-        },
-        body: JSON.stringify({
-          textQuery,
-          languageCode: "en",
-          maxResultCount: 20,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        console.error(
-          `[API ERROR] Google Places API returned error: ${JSON.stringify(data.error || {})}`
-        );
-        throw new ApiError(
-          response.status,
-          "Error fetching restaurants from Google API",
-          [data.error || "Unknown error"]
-        );
-      }
-
-      // Add first page results to the map
-      const firstPageRestaurants = data.places || [];
-      firstPageRestaurants.forEach(restaurant => {
-        if (!uniquePlacesMap.has(restaurant.id)) {
-          uniquePlacesMap.set(restaurant.id, restaurant);
-        }
-      });
-      
-      console.log(
-        `[API SUCCESS] First page returned ${firstPageRestaurants.length} restaurants, ${uniquePlacesMap.size} unique`
+      // Fetch from multiple queries
+      const allRestaurants = await fetchMultipleQueries(
+        restaurantQueries,
+        apiKey,
+        url,
+        fieldMask,
+        targetUniqueCount,
+        "Restaurants"
       );
 
-      // Check if there's a nextPageToken and fetch more pages until we reach our target
-      let pageCounter = 1;
-      let nextPageToken = data.nextPageToken;
-
-      while (nextPageToken && pageCounter < 20 && uniquePlacesMap.size < targetUniqueCount) {
-        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for restaurants (currently have ${uniquePlacesMap.size}/${targetUniqueCount} unique restaurants)`);
-        
-        // Google requires a delay before using nextPageToken
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        
-        try {
-          const nextPageResponse = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Goog-Api-Key": apiKey,
-              "X-Goog-FieldMask":
-                "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
-            },
-            body: JSON.stringify({
-              textQuery,
-              languageCode: "en",
-              maxResultCount: 20,
-              pageToken: nextPageToken
-            }),
-          });
-          
-          const nextPageData = await nextPageResponse.json();
-          
-          if (!nextPageResponse.ok) {
-            console.error(`[API ERROR] Failed to fetch page ${pageCounter + 1}: ${JSON.stringify(nextPageData.error || {})}`);
-            break;
-          }
-          
-          const nextPageRestaurants = nextPageData.places || [];
-          let newUniqueCount = 0;
-          
-          // Add only non-duplicate restaurants to our collection
-          nextPageRestaurants.forEach(restaurant => {
-            if (!uniquePlacesMap.has(restaurant.id)) {
-              uniquePlacesMap.set(restaurant.id, restaurant);
-              newUniqueCount++;
-            }
-          });
-          
-          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageRestaurants.length} restaurants, ${newUniqueCount} new unique`);
-          
-          if (nextPageRestaurants.length === 0 || newUniqueCount === 0) {
-            console.log(`[PAGINATION] No new unique restaurants found, stopping pagination`);
-            break;
-          }
-          
-          // Update for next iteration
-          nextPageToken = nextPageData.nextPageToken;
-          pageCounter++;
-          
-          if (!nextPageToken) {
-            console.log(`[PAGINATION] No more pages available after page ${pageCounter}`);
-            break;
-          }
-        } catch (paginationError) {
-          console.error(`[PAGINATION ERROR] Error fetching page ${pageCounter + 1}: ${paginationError.message}`);
-          break;
-        }
-      }
-
-      // Convert Map values to array
-      const allRestaurants = Array.from(uniquePlacesMap.values());
-      console.log(`[API SUCCESS] Total unique restaurants fetched: ${allRestaurants.length}`);
+      console.log(
+        `[API SUCCESS] Total unique restaurants fetched: ${allRestaurants.length}`
+      );
 
       if (allRestaurants.length > 0) {
         try {
@@ -888,18 +881,16 @@ export const getRestaurants = async (req, res) => {
         }
       }
 
-      return res
-        .status(200)
-        .json(
-          new ApiResponse(
-            200,
-            {
-              restaurants: [],
-              pagination: { totalItems: 0, currentPage: page, totalPages: 0 },
-            },
-            "No restaurants found"
-          )
-        );
+      return res.status(200).json(
+        new ApiResponse(
+          200,
+          {
+            restaurants: [],
+            pagination: { totalItems: 0, currentPage: page, totalPages: 0 },
+          },
+          "No restaurants found"
+        )
+      );
     } catch (fetchError) {
       console.error(
         `[FETCH ERROR] Failed to get data from Google API: ${fetchError.message}`
@@ -1092,123 +1083,43 @@ export const getAmusementParks = async (req, res) => {
     }
 
     const url = "https://places.googleapis.com/v1/places:searchText";
-    const textQuery = "amusement parks in Pakistan";
+
+    // Multiple queries for varied amusement park coverage
+    const amusementParkQueries = [
+      "theme parks in Pakistan",
+      "water parks in Pakistan",
+      "amusement parks in Karachi",
+      "amusement parks in Lahore",
+      "family entertainment centers in Pakistan",
+      "adventure parks in Pakistan",
+      "fun activities in Pakistan",
+      "recreational parks in Pakistan",
+      "children's parks in Pakistan",
+      "entertainment venues in Pakistan",
+      "amusement parks in Islamabad",
+      "fun land Pakistan",
+      "joyland Pakistan",
+      "sozo water park Pakistan",
+      "amusement rides Pakistan",
+    ];
+
+    const fieldMask =
+      "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken";
 
     try {
-      // Create a Map to track unique places by ID
-      const uniquePlacesMap = new Map();
-      
-      // Fetch first page of results
-      console.log(`[API] Fetching first page of amusement parks`);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask":
-            "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
-        },
-        body: JSON.stringify({
-          textQuery,
-          languageCode: "en",
-          maxResultCount: 20,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        console.error(
-          `[API ERROR] Google Places API returned error: ${JSON.stringify(data.error || {})}`
-        );
-        throw new ApiError(
-          response.status,
-          "Error fetching amusement parks from Google API",
-          [data.error || "Unknown error"]
-        );
-      }
-
-      // Add first page results to the map
-      const firstPageParks = data.places || [];
-      firstPageParks.forEach(park => {
-        if (!uniquePlacesMap.has(park.id)) {
-          uniquePlacesMap.set(park.id, park);
-        }
-      });
-      
-      console.log(
-        `[API SUCCESS] First page returned ${firstPageParks.length} amusement parks, ${uniquePlacesMap.size} unique`
+      // Fetch from multiple queries
+      const allAmusementParks = await fetchMultipleQueries(
+        amusementParkQueries,
+        apiKey,
+        url,
+        fieldMask,
+        targetUniqueCount,
+        "Amusement Parks"
       );
 
-      // Check if there's a nextPageToken and fetch more pages until we reach our target
-      let pageCounter = 1;
-      let nextPageToken = data.nextPageToken;
-
-      while (nextPageToken && pageCounter < 20 && uniquePlacesMap.size < targetUniqueCount) {
-        console.log(`[PAGINATION] Fetching page ${pageCounter + 1} for amusement parks (currently have ${uniquePlacesMap.size}/${targetUniqueCount} unique parks)`);
-        
-        // Google requires a delay before using nextPageToken
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        
-        try {
-          const nextPageResponse = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Goog-Api-Key": apiKey,
-              "X-Goog-FieldMask":
-                "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos.name,places.photos.widthPx,places.photos.heightPx,places.editorialSummary,places.primaryTypeDisplayName,places.id,places.types,places.googleMapsUri,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.internationalPhoneNumber,nextPageToken",
-            },
-            body: JSON.stringify({
-              textQuery,
-              languageCode: "en",
-              maxResultCount: 20,
-              pageToken: nextPageToken
-            }),
-          });
-          
-          const nextPageData = await nextPageResponse.json();
-          
-          if (!nextPageResponse.ok) {
-            console.error(`[API ERROR] Failed to fetch page ${pageCounter + 1}: ${JSON.stringify(nextPageData.error || {})}`);
-            break;
-          }
-          
-          const nextPageParks = nextPageData.places || [];
-          let newUniqueCount = 0;
-          
-          // Add only non-duplicate parks to our collection
-          nextPageParks.forEach(park => {
-            if (!uniquePlacesMap.has(park.id)) {
-              uniquePlacesMap.set(park.id, park);
-              newUniqueCount++;
-            }
-          });
-          
-          console.log(`[API SUCCESS] Page ${pageCounter + 1} returned ${nextPageParks.length} amusement parks, ${newUniqueCount} new unique`);
-          
-          if (nextPageParks.length === 0 || newUniqueCount === 0) {
-            console.log(`[PAGINATION] No new unique amusement parks found, stopping pagination`);
-            break;
-          }
-          
-          // Update for next iteration
-          nextPageToken = nextPageData.nextPageToken;
-          pageCounter++;
-          
-          if (!nextPageToken) {
-            console.log(`[PAGINATION] No more pages available after page ${pageCounter}`);
-            break;
-          }
-        } catch (paginationError) {
-          console.error(`[PAGINATION ERROR] Error fetching page ${pageCounter + 1}: ${paginationError.message}`);
-          break;
-        }
-      }
-
-      // Convert Map values to array
-      const allAmusementParks = Array.from(uniquePlacesMap.values());
-      console.log(`[API SUCCESS] Total unique amusement parks fetched: ${allAmusementParks.length}`);
+      console.log(
+        `[API SUCCESS] Total unique amusement parks fetched: ${allAmusementParks.length}`
+      );
 
       if (allAmusementParks.length > 0) {
         try {
@@ -1289,18 +1200,16 @@ export const getAmusementParks = async (req, res) => {
         }
       }
 
-      return res
-        .status(200)
-        .json(
-          new ApiResponse(
-            200,
-            {
-              amusementParks: [],
-              pagination: { totalItems: 0, currentPage: page, totalPages: 0 },
-            },
-            "No amusement parks found"
-          )
-        );
+      return res.status(200).json(
+        new ApiResponse(
+          200,
+          {
+            amusementParks: [],
+            pagination: { totalItems: 0, currentPage: page, totalPages: 0 },
+          },
+          "No amusement parks found"
+        )
+      );
     } catch (fetchError) {
       console.error(
         `[FETCH ERROR] Failed to get data from Google API: ${fetchError.message}`
