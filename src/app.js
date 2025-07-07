@@ -31,8 +31,8 @@ app.use(passport.initialize());
 
 app.use(
   cors({
-    origin: allowedOrigins,
     credentials: true,
+    origin: process.env.FRONTEND_URL || "https://pakistani-panorama.vercel.app",
   })
 );
 
