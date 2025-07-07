@@ -7,7 +7,7 @@ import { errorHandler } from "./middlewares/error.middleware.js";
 import { connectRedis } from "./config/redis.config.js";
 
 const app = express();
-const allowedOrigins = process.env.FRONTEND_URL.split(",");
+// const allowedOrigins = process.env.FRONTEND_URL.split(",");
 
 // Connect to Redis Cloud
 connectRedis();
@@ -32,7 +32,7 @@ app.use(passport.initialize());
 app.use(
   cors({
     credentials: true,
-    origin: process.env.FRONTEND_URL || "https://pakistani-panorama.vercel.app",
+    origin: process.env.FRONTEND_URL || "https://pakistanipanorama.live",
   })
 );
 
